@@ -1,40 +1,53 @@
-import { MockConfig, RecordConfig, RequestInfo, ReplayConfig, ReplayStrategy, SniffConfig } from './types';
+import {
+  MockConfig,
+  RecordConfig,
+  RequestInfo,
+  ReplayConfig,
+  ReplayStrategy,
+  SniffConfig,
+} from './types';
 import { Queue } from 'queue-typescript';
 import { ProxyOptions } from './proxy';
 import { Record } from './record';
 import { v4 as uuid } from 'uuid';
 import _ from 'lodash';
 import { IContext } from 'http-mitm-proxy';
-import { constructURLFromHttpRequest, modifyRequestBody, modifyRequestHeaders, modifyRequestUrl, modifyResponseBody, sleep } from './utils/record';
+import {
+  constructURLFromHttpRequest,
+  modifyRequestBody,
+  modifyRequestHeaders,
+  modifyRequestUrl,
+  modifyResponseBody,
+  sleep,
+} from './utils/record';
 import { doesUrlMatch, parseJson } from './utils/proxy';
 import { ApiSniffer } from './api-sniffer';
 import log from './logger';
 
-
 export class RecordingManager {
   private readonly records = new Map<string, Map<string, Record>>();
   private readonly simulationStrategyMap = new Map<string, ReplayStrategy>();
-  
+
   constructor(private readonly options: ProxyOptions) {}
 
   public getCapturedTraffic(_sniffers: ApiSniffer[]): RequestInfo[] {
     const apiRequests: RequestInfo[] = [];
-  
-    _sniffers.forEach(sniffer => {
+
+    _sniffers.forEach((sniffer) => {
       const apiConfigMap = new Map<string, RequestInfo>();
       const requests = sniffer.getRequests();
-  
+
       if (!requests || requests.length === 0) {
         return;
       }
-  
-      requests.forEach(request => {
+
+      requests.forEach((request) => {
         const path = new URL(request.url).pathname;
         const key = `${path}_${request.method}`;
-        
+
         if (apiConfigMap.has(key)) {
           const existingConfig = apiConfigMap.get(key)!;
-          existingConfig.responseBody.push(request.responseBody);  
+          existingConfig.responseBody.push(request.responseBody);
         } else {
           const recordConfig: RequestInfo = {
             url: request.url,
@@ -43,38 +56,40 @@ export class RecordingManager {
             statusCode: request.statusCode,
             requestHeaders: request.requestHeaders,
             responseHeaders: request.responseHeaders,
-            responseBody: [request.responseBody]
+            responseBody: [request.responseBody],
           };
           apiConfigMap.set(key, recordConfig);
         }
       });
-  
+
       apiRequests.push(...apiConfigMap.values());
     });
     return apiRequests;
-  }  
-  
+  }
+
   public replayTraffic(simulationConfig: ReplayConfig) {
     const recordConfigs = simulationConfig.recordings;
-    this.simulationStrategyMap.set(this.options.sessionId, simulationConfig.replayStrategy ? 
-                                    simulationConfig.replayStrategy : ReplayStrategy.DEFAULT);
-    
-    const recordMap = new Map<string, Record>();  
+    this.simulationStrategyMap.set(
+      this.options.sessionId,
+      simulationConfig.replayStrategy ? simulationConfig.replayStrategy : ReplayStrategy.DEFAULT,
+    );
+
+    const recordMap = new Map<string, Record>();
     const replayId = `${this.options.deviceUDID}-${this.options.sessionId}`;
 
-    recordConfigs.forEach(recordConfig => {
-        const responseBody : Queue<string> = new Queue<string>();
-        const url = new URL(recordConfig.url);
-        const id = `${this.options.deviceUDID}_${url.pathname}_${recordConfig.method?.toLowerCase()}`;
+    recordConfigs.forEach((recordConfig) => {
+      const responseBody: Queue<string> = new Queue<string>();
+      const url = new URL(recordConfig.url);
+      const id = `${this.options.deviceUDID}_${url.pathname}_${recordConfig.method?.toLowerCase()}`;
 
-        if (recordConfig.responseBody && recordConfig.responseBody.length > 0) {
-          for (const response of recordConfig.responseBody) {
-            responseBody.append(response);
-          }
+      if (recordConfig.responseBody && recordConfig.responseBody.length > 0) {
+        for (const response of recordConfig.responseBody) {
+          responseBody.append(response);
         }
-        recordConfig.responseBody = responseBody;
-        recordMap.set(id, new Record(id, recordConfig));
-    })
+      }
+      recordConfig.responseBody = responseBody;
+      recordMap.set(id, new Record(id, recordConfig));
+    });
     this.records.set(replayId, recordMap);
     return replayId;
   }
@@ -87,9 +102,9 @@ export class RecordingManager {
   public async handleRecordingApiRequest(ctx: IContext, next: () => void): Promise<void> {
     const matchedRecords = await this.findMatchingRecords(ctx);
     if (matchedRecords.length) {
-      matchedRecords.forEach(matchedRecord => {
+      matchedRecords.forEach((matchedRecord) => {
         this.applyRecordToRequest(ctx, matchedRecord, next);
-      })
+      });
     } else {
       next();
     }
@@ -134,6 +149,9 @@ export class RecordingManager {
     if (recordConfig.delay) {
       await sleep(recordConfig.delay);
     }
+    if (ctx.proxyToClientResponse && ctx.proxyToClientResponse.destroyed) {
+      return;
+    }
     this.modifyClientRequest(ctx, recordConfig);
     this.modifyClientResponse(ctx, recordConfig, next);
   }
@@ -147,13 +165,19 @@ export class RecordingManager {
   private async modifyClientResponse(ctx: IContext, recordConfig: RecordConfig, next: () => void) {
     const id = `${this.options.deviceUDID}_${recordConfig.url}_${recordConfig.method?.toLowerCase()}`;
 
-    if (recordConfig.statusCode && recordConfig.responseBody && recordConfig.responseBody.length > 0) {
+    if (
+      recordConfig.statusCode &&
+      recordConfig.responseBody &&
+      recordConfig.responseBody.length > 0
+    ) {
       ctx.proxyToClientResponse.writeHead(recordConfig.statusCode);
       const responseBody = recordConfig.responseBody.dequeue();
-      
-      this.simulationStrategyMap.get(this.options.sessionId) === ReplayStrategy.CIRCULAR ? recordConfig.responseBody.enqueue(responseBody) : null;
+
+      this.simulationStrategyMap.get(this.options.sessionId) === ReplayStrategy.CIRCULAR
+        ? recordConfig.responseBody.enqueue(responseBody)
+        : null;
       ctx.proxyToClientResponse.end(responseBody);
-      
+
       if (this.records.has(id) && recordConfig.responseBody.length <= 0) {
         this.records.delete(id);
       }

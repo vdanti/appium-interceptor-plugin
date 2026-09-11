@@ -1,7 +1,5 @@
 import { IContext, OnRequestDataCallback } from 'http-mitm-proxy';
-import {
-  RecordConfig,
-} from '../types';
+import { RecordConfig } from '../types';
 import _ from 'lodash';
 import log from '../logger';
 import { parseRegex, processBody } from './proxy';
@@ -37,7 +35,7 @@ export function modifyRequestUrl(ctx: IContext, recordConfig: RecordConfig) {
   ctx.proxyToServerRequestOptions.host = updatedUrl.hostname;
   ctx.proxyToServerRequestOptions.path = `${updatedUrl.pathname}${updatedUrl.search}`;
   ctx.proxyToServerRequestOptions.port = updatedUrl.port || ctx.proxyToServerRequestOptions.port;
-  ctx.proxyToServerRequestOptions.headers.host= updatedUrl.hostname;
+  ctx.proxyToServerRequestOptions.headers.host = updatedUrl.hostname;
 }
 
 export function modifyRequestHeaders(ctx: IContext, recordConfig: RecordConfig) {
@@ -73,32 +71,34 @@ export function modifyRequestBody(ctx: IContext, recordConfig: RecordConfig) {
 }
 
 export function modifyResponseBody(ctx: IContext, recordConfig: RecordConfig) {
-    const responseBodyChunks: Buffer[] = [];
+  const responseBodyChunks: Buffer[] = [];
 
-    // Collect response data chunks
-    ctx.onResponseData((ctx: IContext, chunk: Buffer, callback: OnRequestDataCallback) => {
-      responseBodyChunks.push(chunk);
-      return callback(null, undefined);
-    });
-  
-    // Handle end of response data
-    ctx.onResponseEnd((ctx: IContext, callback: OnRequestDataCallback) => {
-      const responseBody = Buffer.concat(responseBodyChunks).toString('utf8');
-      const statusCode = recordConfig.statusCode ?? ctx.serverToProxyResponse?.statusCode as number;
-      try {
-        ctx.proxyToClientResponse.writeHead(statusCode);
-      } catch (error) {
-        log.error(`Error occurred while writing status code to response for URL: ${recordConfig.url}`);
+  if (recordConfig.statusCode) {
+    ctx.onResponse((ctx: IContext, callback) => {
+      if (ctx.serverToProxyResponse) {
+        ctx.serverToProxyResponse.statusCode = recordConfig.statusCode as number;
       }
-      try {
-        ctx.proxyToClientResponse.write(responseBody);
-      } catch (error) {
-        log.error(`Error occurred while writing response body for URL: ${recordConfig.url}`);
-      }
-      callback(null);
+      return callback();
     });
+  }
+
+  // Collect response data chunks
+  ctx.onResponseData((ctx: IContext, chunk: Buffer, callback: OnRequestDataCallback) => {
+    responseBodyChunks.push(chunk);
+    return callback(null, undefined);
+  });
+
+  // Handle end of response data
+  ctx.onResponseEnd((ctx: IContext, callback: OnRequestDataCallback) => {
+    const responseBody = Buffer.concat(responseBodyChunks).toString('utf8');
+    try {
+      ctx.proxyToClientResponse.write(responseBody);
+    } catch (error) {
+      log.error(`Error occurred while writing response body for URL: ${recordConfig.url}`);
+    }
+    callback(null);
+  });
 }
-
 
 export function compileRecordConfig(records: Array<RecordConfig>) {
   const compiledRecord: RecordConfig = {
